@@ -218,3 +218,4 @@ erasure/
 - **Audio**: uses browser `speechSynthesis` + Tone.js; requires a user click to start in most browsers.
 
 # erase
+# public
