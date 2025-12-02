@@ -450,12 +450,80 @@ window.alexStartMic = function() {
 
 // Simple text-to-speech helpers for reading the story aloud
 let currentUtterance = null;
+let bgmPreviousVolume = null;
+let narrationVoice = null;
+
+function selectNarrationVoice() {
+  try {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    const voices = window.speechSynthesis.getVoices() || [];
+    if (!voices.length) return;
+
+    // Prefer high-quality English voices that often sound more natural
+    const preferredOrder = [
+      // Common better-sounding voices on many systems
+      'Google UK English Female',
+      'Google US English',
+      'Microsoft Aria Online (Natural)',
+      'Microsoft Jenny Online (Natural)',
+      'Microsoft Guy Online (Natural)'
+    ];
+
+    let chosen = null;
+    for (const name of preferredOrder) {
+      const v = voices.find((voice) => voice.name === name);
+      if (v) {
+        chosen = v;
+        break;
+      }
+    }
+
+    // Fallback: first English voice
+    if (!chosen) {
+      chosen = voices.find((v) => (v.lang || '').toLowerCase().startsWith('en')) || voices[0];
+    }
+
+    narrationVoice = chosen || voices[0];
+  } catch (e) {}
+}
+
+if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+  try {
+    window.speechSynthesis.onvoiceschanged = () => {
+      selectNarrationVoice();
+    };
+    // Try initial selection in case voices are already loaded
+    selectNarrationVoice();
+  } catch (e) {}
+}
+
+function lowerBgmForSpeech() {
+  try {
+    const bgmEl = document.getElementById('alex-bgm');
+    if (!bgmEl) return;
+    if (bgmPreviousVolume === null) {
+      bgmPreviousVolume = typeof bgmEl.volume === 'number' ? bgmEl.volume : 0.35;
+    }
+    bgmEl.volume = Math.max(0, bgmPreviousVolume * 0.3);
+  } catch (e) {}
+}
+
+function restoreBgmAfterSpeech() {
+  try {
+    const bgmEl = document.getElementById('alex-bgm');
+    if (!bgmEl) return;
+    if (bgmPreviousVolume !== null) {
+      bgmEl.volume = bgmPreviousVolume;
+    }
+  } catch (e) {}
+}
 
 function stopStorySpeech() {
   if (typeof window === 'undefined') return;
   if (!('speechSynthesis' in window)) return;
   window.speechSynthesis.cancel();
   currentUtterance = null;
+  restoreBgmAfterSpeech();
 }
 
 function speakStoryText(text) {
@@ -467,10 +535,25 @@ function speakStoryText(text) {
   stopStorySpeech();
 
   const utterance = new SpeechSynthesisUtterance(trimmed);
-  utterance.rate = 1.0;
+  if (narrationVoice) {
+    utterance.voice = narrationVoice;
+  }
+  utterance.rate = 0.96;
   utterance.pitch = 1.0;
   utterance.volume = typeof appState.narratorVolume === 'number' ? appState.narratorVolume : 0.8;
   currentUtterance = utterance;
+
+  try {
+    lowerBgmForSpeech();
+  } catch (e) {}
+
+  utterance.onend = () => {
+    restoreBgmAfterSpeech();
+  };
+  utterance.onerror = () => {
+    restoreBgmAfterSpeech();
+  };
+
   window.speechSynthesis.speak(utterance);
 }
 
@@ -1698,66 +1781,82 @@ async function characterReadStoryAloud(parts) {
 
   const midpoint = Math.floor(parts.length / 2) || 0;
 
-  for (let i = 0; i < parts.length; i++) {
-    const raw = parts[i];
-    const baseText = String(raw || '').trim();
-    if (!baseText) continue;
-
-    let textToSpeak = baseText;
-    if (i === midpoint) {
-      textToSpeak += ' ... How are you feeling right now inside this story?';
-    }
-
-    // Trigger character talk animation if available
+  try {
     try {
-      const speaker = dreamCharacters[0] || dreamCharacters[1] || dreamCharacters[2];
-      if (speaker) {
-        try {
-          speaker.speak(textToSpeak);
-        } catch (e) {}
+      lowerBgmForSpeech();
+    } catch (e) {}
+
+    for (let i = 0; i < parts.length; i++) {
+      const raw = parts[i];
+      const baseText = String(raw || '').trim();
+      if (!baseText) continue;
+
+      let textToSpeak = baseText;
+      if (i === midpoint) {
+        textToSpeak += ' ... How are you feeling right now inside this story?';
       }
-    } catch (e) {
-      console.warn('Speak error:', e);
+
+      // Trigger character talk animation if available
+      try {
+        const speaker = dreamCharacters[0] || dreamCharacters[1] || dreamCharacters[2];
+        if (speaker) {
+          try {
+            speaker.speak(textToSpeak);
+          } catch (e) {}
+        }
+      } catch (e) {
+        console.warn('Speak error:', e);
+      }
+
+      // Use browser text-to-speech for actual narration
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        await new Promise((resolve) => {
+          const utterance = new SpeechSynthesisUtterance(textToSpeak);
+          if (narrationVoice) {
+            utterance.voice = narrationVoice;
+          }
+          utterance.rate = 0.96;
+          utterance.pitch = 1.0;
+          utterance.volume = typeof appState.narratorVolume === 'number' ? appState.narratorVolume : 0.8;
+          utterance.onend = () => resolve();
+          utterance.onerror = () => resolve();
+          window.speechSynthesis.speak(utterance);
+        });
+      }
     }
 
-    // Use browser text-to-speech for actual narration
+    // Closing thank-you and opinion prompt
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      const closingLine = 'Thank you for reading with me. What did this story make you feel?';
+
+      try {
+        const speaker = dreamCharacters[0] || dreamCharacters[1] || dreamCharacters[2];
+        if (speaker) {
+          try {
+            speaker.speak(closingLine);
+          } catch (e) {}
+        }
+      } catch (e) {
+        console.warn('Closing speak error:', e);
+      }
+
       await new Promise((resolve) => {
-        const utterance = new SpeechSynthesisUtterance(textToSpeak);
-        utterance.rate = 1.0;
-        utterance.pitch = 1.0;
-        utterance.volume = typeof appState.narratorVolume === 'number' ? appState.narratorVolume : 0.8;
-        utterance.onend = () => resolve();
-        utterance.onerror = () => resolve();
-        window.speechSynthesis.speak(utterance);
+        const closingUtterance = new SpeechSynthesisUtterance(closingLine);
+        if (narrationVoice) {
+          closingUtterance.voice = narrationVoice;
+        }
+        closingUtterance.rate = 0.96;
+        closingUtterance.pitch = 1.0;
+        closingUtterance.volume = typeof appState.narratorVolume === 'number' ? appState.narratorVolume : 0.8;
+        closingUtterance.onend = () => resolve();
+        closingUtterance.onerror = () => resolve();
+        window.speechSynthesis.speak(closingUtterance);
       });
     }
-  }
-
-  // Closing thank-you and opinion prompt
-  if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-    const closingLine = 'Thank you for reading with me. What did this story make you feel?';
-
+  } finally {
     try {
-      const speaker = dreamCharacters[0] || dreamCharacters[1] || dreamCharacters[2];
-      if (speaker) {
-        try {
-          speaker.speak(closingLine);
-        } catch (e) {}
-      }
-    } catch (e) {
-      console.warn('Closing speak error:', e);
-    }
-
-    await new Promise((resolve) => {
-      const closingUtterance = new SpeechSynthesisUtterance(closingLine);
-      closingUtterance.rate = 1.0;
-      closingUtterance.pitch = 1.0;
-      closingUtterance.volume = typeof appState.narratorVolume === 'number' ? appState.narratorVolume : 0.8;
-      closingUtterance.onend = () => resolve();
-      closingUtterance.onerror = () => resolve();
-      window.speechSynthesis.speak(closingUtterance);
-    });
+      restoreBgmAfterSpeech();
+    } catch (e) {}
   }
 
   // Return characters to a neutral mood at the end
